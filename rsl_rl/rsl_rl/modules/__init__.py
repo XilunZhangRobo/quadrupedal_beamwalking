@@ -28,26 +28,32 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-from legged_gym import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
-from legged_gym.envs.a1.a1_config import A1RoughCfg, A1RoughCfgPPO
-from .base.legged_robot import LeggedRobot
-from .anymal_c.anymal import Anymal
-from .anymal_c.mixed_terrains.anymal_c_rough_config import AnymalCRoughCfg, AnymalCRoughCfgPPO
-from .anymal_c.flat.anymal_c_flat_config import AnymalCFlatCfg, AnymalCFlatCfgPPO
-from .anymal_b.anymal_b_config import AnymalBRoughCfg, AnymalBRoughCfgPPO
-from .cassie.cassie import Cassie
-from .cassie.cassie_config import CassieRoughCfg, CassieRoughCfgPPO
-from .a1.a1_config import A1RoughCfg, A1RoughCfgPPO
-from .a1.a1_beamwalk_config import A1BeamwalkCfg, A1BeamwalkCfgPPO
+from .actor_critic import ActorCritic
+from .actor_critic_recurrent import ActorCriticRecurrent
+from .visual_actor_critic import VisualDeterministicRecurrent, VisualDeterministicAC
+from .actor_critic_mutex import ActorCriticMutex
+from .actor_critic_field_mutex import ActorCriticFieldMutex, ActorCriticClimbMutex
 
+def build_actor_critic(env, policy_class_name, policy_cfg):
+    """ NOTE: This method allows to hack the policy kwargs by adding the env attributes to the policy_cfg. """
+    actor_critic_class = globals()[policy_class_name] # ActorCritic
 
-import os
+    policy_cfg = policy_cfg.copy()
+    if env.num_privileged_obs is not None:
+        num_critic_obs = env.num_privileged_obs 
+    else:
+        num_critic_obs = env.num_obs
+    if hasattr(env, "obs_segments") and "obs_segments" not in policy_cfg:
+        policy_cfg["obs_segments"] = env.obs_segments
+    if hasattr(env, "privileged_obs_segments") and "privileged_obs_segments" not in policy_cfg:
+        policy_cfg["privileged_obs_segments"] = env.privileged_obs_segments
+    if not "num_actor_obs" in policy_cfg:
+        policy_cfg["num_actor_obs"] = env.num_obs
+    if not "num_critic_obs" in policy_cfg:
+        policy_cfg["num_critic_obs"] = num_critic_obs
+    if not "num_actions" in policy_cfg:
+        policy_cfg["num_actions"] = env.num_actions
+    
+    actor_critic: ActorCritic = actor_critic_class(**policy_cfg)
 
-from legged_gym.utils.task_registry import task_registry
-
-task_registry.register( "anymal_c_rough", Anymal, AnymalCRoughCfg(), AnymalCRoughCfgPPO() )
-task_registry.register( "anymal_c_flat", Anymal, AnymalCFlatCfg(), AnymalCFlatCfgPPO() )
-task_registry.register( "anymal_b", Anymal, AnymalBRoughCfg(), AnymalBRoughCfgPPO() )
-task_registry.register( "a1", LeggedRobot, A1RoughCfg(), A1RoughCfgPPO() )
-task_registry.register( "cassie", Cassie, CassieRoughCfg(), CassieRoughCfgPPO() )
-task_registry.register( "a1_beamwalk", LeggedRobot, A1BeamwalkCfg(), A1BeamwalkCfgPPO() )
+    return actor_critic

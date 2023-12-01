@@ -169,8 +169,10 @@ def get_args():
     args = gymutil.parse_arguments(
         description="RL Policy",
         custom_parameters=custom_parameters)
+    # print("args: ", args)
 
     # name allignment
+    args.compute_device_id = args.rl_device.split(':')[-1]
     args.sim_device_id = args.compute_device_id
     args.sim_device = args.sim_device_type
     if args.sim_device=='cuda':

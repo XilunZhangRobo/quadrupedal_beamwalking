@@ -64,6 +64,7 @@ class LeggedRobot(BaseTask):
         """
         self.cfg = cfg
         self.sim_params = sim_params
+        self.sim_params.physx.max_gpu_contact_pairs *=3
         self.height_samples = None
         self.debug_viz = False
         self.init_done = False
@@ -400,16 +401,26 @@ class LeggedRobot(BaseTask):
         if self.custom_origins:
             self.root_states[env_ids] = self.base_init_state
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
-            self.root_states[env_ids, :2] += torch_rand_float(-1., 1., (len(env_ids), 2), device=self.device) # xy position within 1m of the center
+            self.root_states[env_ids, :2] += torch_rand_float(-1., 1., (len(env_ids), 2), device=self.device) # xy position within 1m of the center      
         else:
+            # print("root_states: ", self.root_states.device)
             self.root_states[env_ids] = self.base_init_state
+            self.beam_state[env_ids,:3] = self.beam_initial_pos
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
+            self.beam_state[env_ids, :2] += self.env_origins[env_ids, :2]
+            
+            ## define the initial position of the step base
+            self.stepbase_state[env_ids, :3] = self.base_init_state[:3]
+            self.stepbase_state[env_ids, :2] += self.env_origins[env_ids, :2]
+            self.stepbase_state[env_ids, 2] = self.beam_initial_pos[0][2]
         # base velocities
-        self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
-        env_ids_int32 = env_ids.to(dtype=torch.int32)
+        self.root_states[env_ids, 7:13] = torch_rand_float(-0.1, 0.1, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
+        # env_ids_int32 = env_ids.to(dtype=torch.int32)
+        multi_env_ids_int32 = self._global_indices[env_ids, :].flatten()
+        all_root_states = torch.cat((self.beam_state[:, None, :], self.stepbase_state[:,None,:], self.root_states[:, None, :]),dim=1).reshape(-1, 13)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
-                                                     gymtorch.unwrap_tensor(self.root_states),
-                                                     gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+                                                     gymtorch.unwrap_tensor(all_root_states),
+                                                     gymtorch.unwrap_tensor(multi_env_ids_int32.contiguous()), len(multi_env_ids_int32))
 
     def _push_robots(self):
         """ Random pushes the robots. Emulates an impulse by setting a randomized base velocity. 
@@ -488,9 +499,18 @@ class LeggedRobot(BaseTask):
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
+        
+        ## create initial pos 
+        self.beam_initial_pos = torch.tensor([[1.3, 0., 0.3]], device=self.device)
+        
+        ## create goal pos 
+        self.goal_pos = self.beam_initial_pos + self.beam_size[0] / 2 
 
         # create some wrapper tensors for different slices
-        self.root_states = gymtorch.wrap_tensor(actor_root_state)
+        self.all_root_states = gymtorch.wrap_tensor(actor_root_state).view(self.num_envs, -1, 13)  # N, 2, 13
+        self.root_states = self.all_root_states[:, 2, :]  # N, 13
+        self.beam_state = self.all_root_states[:, self.beam_id, :]
+        self.stepbase_state = self.all_root_states[:, self.stepbase_id, :]
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
@@ -660,20 +680,68 @@ class LeggedRobot(BaseTask):
 
         base_init_state_list = self.cfg.init_state.pos + self.cfg.init_state.rot + self.cfg.init_state.lin_vel + self.cfg.init_state.ang_vel
         self.base_init_state = to_torch(base_init_state_list, device=self.device, requires_grad=False)
+        # print ('base_init_state: ', self.base_init_state)
         start_pose = gymapi.Transform()
         start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
+        
+        ## create beam asset
+        self.beam_size = np.array([3.5, 0.3, 0.1])
+        beam_size = gymapi.Vec3(self.beam_size[0], self.beam_size[1], self.beam_size[2])
+        beam_asset_options = gymapi.AssetOptions()
+        beam_asset_options.fix_base_link = True
+        beam_asset = self.gym.create_box(self.sim, beam_size.x, beam_size.y, beam_size.z, beam_asset_options)
+        beam_pose = gymapi.Transform()
+        rigid_beam_props_asset = self.gym.get_asset_rigid_shape_properties(beam_asset)
+        
+        ## create stepbase asset
+        stepbase_size = gymapi.Vec3(1, 1, 0.1)
+        stepbase_asset_options = gymapi.AssetOptions()
+        stepbase_asset_options.fix_base_link = True
+        stepbase_asset = self.gym.create_box(self.sim, stepbase_size.x, stepbase_size.y, stepbase_size.z, stepbase_asset_options)
+        stepbase_pose = gymapi.Transform()
+        rigid_stepbase_props_asset = self.gym.get_asset_rigid_shape_properties(stepbase_asset)
+        
 
         self._get_env_origins()
+        # spacing = 1.0
+        # env_lower = gymapi.Vec3(-spacing, -spacing, 0.0)
+        # env_upper = gymapi.Vec3(spacing, spacing, spacing)
         env_lower = gymapi.Vec3(0., 0., 0.)
         env_upper = gymapi.Vec3(0., 0., 0.)
         self.actor_handles = []
         self.envs = []
+        beam_idxs = []
+        stepbase_idxs = []
         for i in range(self.num_envs):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
             pos = self.env_origins[i].clone()
-            pos[:2] += torch_rand_float(-1., 1., (2,1), device=self.device).squeeze(1)
             start_pose.p = gymapi.Vec3(*pos)
+            # get global index of box in rigid body state tensor
+            rigid_beam_props = self._process_rigid_shape_props(rigid_beam_props_asset, i)
+            self.gym.set_asset_rigid_shape_properties(beam_asset, rigid_beam_props)
+            
+            rigid_stepbase_props = self._process_rigid_shape_props(rigid_stepbase_props_asset, i)
+            self.gym.set_asset_rigid_shape_properties(stepbase_asset, rigid_stepbase_props)           
+            
+            # create beam instance
+            beam_handle = self.gym.create_actor(env_handle, beam_asset, beam_pose, "box1", i, 0, 0)
+            self.beam_id = beam_handle
+            stepbase_handle = self.gym.create_actor(env_handle, stepbase_asset, stepbase_pose, "box2", i, 0, 0)
+            self.stepbase_id = stepbase_handle
+            color = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
+            beam_props = self._process_rigid_body_props(self.gym.get_actor_rigid_body_properties(env_handle, beam_handle),i)
+            stepbase_props = self._process_rigid_body_props(self.gym.get_actor_rigid_body_properties(env_handle, stepbase_handle),i)
+            
+            self.gym.set_rigid_body_color(env_handle, beam_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
+            self.gym.set_actor_rigid_body_properties(env_handle, beam_handle, beam_props, recomputeInertia=True)
+            beam_idx = self.gym.get_actor_rigid_body_index(env_handle, beam_handle, 0, gymapi.DOMAIN_SIM)
+            beam_idxs.append(beam_idx)
+            
+            self.gym.set_rigid_body_color(env_handle, stepbase_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
+            self.gym.set_actor_rigid_body_properties(env_handle, stepbase_handle, stepbase_props, recomputeInertia=True)
+            stepbase_idx = self.gym.get_actor_rigid_body_index(env_handle, stepbase_handle, 0, gymapi.DOMAIN_SIM)
+            stepbase_idxs.append(stepbase_idx)
                 
             rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)
             self.gym.set_asset_rigid_shape_properties(robot_asset, rigid_shape_props)
@@ -697,7 +765,10 @@ class LeggedRobot(BaseTask):
         self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(termination_contact_names)):
             self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], termination_contact_names[i])
-
+            
+        self._global_indices = torch.arange(self.num_envs * (1 + 2), dtype=torch.int32, 
+                                    device=self.device).view(self.num_envs, -1)   
+        
     def _get_env_origins(self):
         """ Sets environment origins. On rough terrain the origins are defined by the terrain platforms.
             Otherwise create a grid.
@@ -904,3 +975,99 @@ class LeggedRobot(BaseTask):
     def _reward_feet_contact_forces(self):
         # penalize high contact forces
         return torch.sum((torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) -  self.cfg.rewards.max_contact_force).clip(min=0.), dim=1)
+
+    
+    def _reward_goal_distance(self):
+        # match the size betweene self.root_state and self.goal_pos
+        goal_pos = self.goal_pos.repeat(self.num_envs, 1)
+        return torch.norm(self.root_states[:, :2] - goal_pos[:,:2], dim=1)
+
+    ##### Additional rewards #####
+    def _reward_feet_on_box_contact(self):
+        # check if the robot body x,y are within the box range 
+        
+        # get the robot body x,y
+        robot_body_x = self.root_states[:, 0]
+        robot_body_y = self.root_states[:, 1]
+        # get the box position from provied beam_handles and beam_idxs
+        beam_x = self.beam_state[:, 0]
+        beam_y = self.beam_state[:, 1]
+        # check if the robot body x,y are within the box range
+        
+        return np.abs(robot_body_y - beam_y)
+    
+    def _reward_falloff_beam(self):
+        # print ("self.root_states[:,1]: ", self.root_states[:,1])
+        # print ("self.beam_state[:,1]: ", self.beam_state[:,1])
+        # print ("self.beam_size[1]: ", self.beam_size[1])
+        if torch.sum(self.root_states[:,2]) > self.num_envs * self.beam_initial_pos[0][2]:
+            return 1
+        else:
+            return -100
+        
+        
+    def _reward_two_feet_jump(self):
+        # reward two feet jump
+        force_leg0 = self.contact_forces[:, self.feet_indices[0], :]
+        force_leg2 = self.contact_forces[:, self.feet_indices[2], :]
+        return torch.sum(torch.square(force_leg0 + force_leg2), axis=1)
+    
+    def _reward_lin_vel_l2norm(self):
+        return torch.norm((self.commands[:, :2] - self.base_lin_vel[:, :2]), dim= 1)
+
+    def _reward_world_vel_l2norm(self):
+        return torch.norm((self.commands[:, :2] - self.root_states[:, 7:9]), dim= 1)
+
+    def _reward_tracking_world_vel(self):
+        world_vel_error = torch.sum(torch.square(self.commands[:, :2] - self.root_states[:, 7:9]), dim= 1)
+        return torch.exp(-world_vel_error/self.cfg.rewards.tracking_sigma)
+
+    def _reward_legs_energy(self):
+        return torch.sum(torch.square(self.torques * self.dof_vel), dim=1)
+
+
+    def _reward_legs_energy_abs(self):
+        return torch.sum(torch.abs(self.torques * self.dof_vel), dim=1)
+
+    def _reward_alive(self):
+        return 1.
+
+    def _reward_dof_error(self):
+        dof_error = torch.sum(torch.square(self.dof_pos - self.default_dof_pos), dim=1)
+        return dof_error
+
+    def _reward_lin_cmd(self):
+        """ This reward term does not depend on the policy, depends on the command """
+        return torch.norm(self.commands[:, :2], dim= 1)
+
+    def _reward_lin_vel_x(self):
+        return self.root_states[:, 7]
+    
+    def _reward_lin_vel_y_abs(self):
+        return torch.abs(self.root_states[:, 8])
+    
+    def _reward_lin_vel_y_square(self):
+        return torch.square(self.root_states[:, 8])
+
+    def _reward_lin_pos_y(self):
+        return torch.abs((self.root_states[:, :3] - self.env_origins)[:, 1])
+    
+    def _reward_yaw_abs(self):
+        """ Aiming for the robot yaw to be zero (pointing to the positive x-axis) """
+        yaw = get_euler_xyz(self.root_states[:, 3:7])[2]
+        yaw[yaw > np.pi] -= np.pi * 2 # to range (-pi, pi)
+        yaw[yaw < -np.pi] += np.pi * 2 # to range (-pi, pi)
+        return torch.abs(yaw)
+    
+    def _reward_sync_all_legs(self):
+        right_legs = torch.clone(torch.cat([
+            self.actions[:, 0:3],
+            self.actions[:, 6:9],
+        ], dim= -1)) # shoulder, thigh, calf
+        left_legs = torch.clone(torch.cat([
+            self.actions[:, 3:6],
+            self.actions[:, 9:12],
+        ], dim= -1)) # shoulder, thigh, calf
+        left_legs[:, 0] *= -1 # flip the sign of shoulder action
+        left_legs[:, 3] *= -1 # flip the sign of shoulder action
+        return torch.norm(right_legs - left_legs, p= 1, dim= -1)
