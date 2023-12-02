@@ -9,6 +9,16 @@ It includes all components needed for sim-to-real transfer: actuator network, fr
 Project website: https://leggedrobotics.github.io/legged_gym/
 Paper: https://arxiv.org/abs/2109.11978
 
+### Test Code ### 
+
+Train the model: python legged_gym/scripts/train.py --task=a1_beamwalk --sim_device=cuda --rl_device=cuda:0 --pipeline=cpu --num_envs=2024 --headless
+
+Test te model: python3 legged_gym/scripts/play.py --task a1_beamwalk --sim_device=cuda  --pipeline=cpu
+
+config path : quadrupedal_beamwalking/legged_gym/envs/a1/a1_beamwalk_config.py
+
+Env path: quadrupedal_beamwalking/legged_gym/envs/base/legged_robot.py
+
 ### Installation ###
 1. Create a new python virtual env with python 3.6, 3.7 or 3.8 (3.8 recommended)
 2. Install pytorch 1.10 with cuda-11.3:
