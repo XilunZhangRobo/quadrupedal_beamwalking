@@ -225,6 +225,8 @@ class LeggedRobot(BaseTask):
         # add noise if needed
         # print (self.obs_buf.shape)
         # print (self.noise_scale_vec.shape)
+        if self.cfg.env.use_prev_actions:
+            self.obs_buf = torch.cat((self.obs_buf, self.last_actions), dim=-1)
             
         if self.cfg.env.use_beam_info:
             # Need to add the heading angle of the robot, the posiiton shift in y-direction, the width of the beam
@@ -294,6 +296,10 @@ class LeggedRobot(BaseTask):
 
             for s in range(len(props)):
                 props[s].friction = self.friction_coeffs[env_id]
+        
+        for s in range(len(props)):
+            props[s].friction = self.cfg.terrain.static_friction
+            props[s].restitution = self.cfg.terrain.restitution
         return props
 
     def _process_dof_props(self, props, env_id):
@@ -713,12 +719,15 @@ class LeggedRobot(BaseTask):
         rigid_beam_props_asset = self.gym.get_asset_rigid_shape_properties(beam_asset)
         
         ## create stepbase asset
-        stepbase_size = gymapi.Vec3(1, 1, 0.1)
+        stepbase_size = gymapi.Vec3(3, 3, 0.1)
         stepbase_asset_options = gymapi.AssetOptions()
         stepbase_asset_options.fix_base_link = True
         stepbase_asset = self.gym.create_box(self.sim, stepbase_size.x, stepbase_size.y, stepbase_size.z, stepbase_asset_options)
         stepbase_pose = gymapi.Transform()
         rigid_stepbase_props_asset = self.gym.get_asset_rigid_shape_properties(stepbase_asset)
+        
+        self.default_friction = rigid_shape_props_asset[1].friction
+        self.default_restitution = rigid_shape_props_asset[1].restitution
         
 
         self._get_env_origins()
