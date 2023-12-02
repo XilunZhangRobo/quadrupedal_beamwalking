@@ -33,8 +33,10 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 class A1BeamwalkCfg( LeggedRobotCfg ):
     
     class env( LeggedRobotCfg.env ):
-        num_envs = 4096
+        num_envs = 2024
+        num_observations = 51 # 235
         env_spacing = 5.  # not used with heightfields/trimeshes 
+        use_beam_info = True
         
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.42+0.2] # x,y,z [m]
@@ -65,7 +67,7 @@ class A1BeamwalkCfg( LeggedRobotCfg ):
         dynamic_friction = 1.0
         restitution = 0.
         # rough terrain only:
-        measure_heights = True
+        measure_heights = False
         measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] # 1mx1.6m rectangle (without center line)
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
         selected = False # select a unique terrain type and pass all arguments
@@ -125,19 +127,20 @@ class A1BeamwalkCfg( LeggedRobotCfg ):
         only_positive_rewards = False
         
         class scales( LeggedRobotCfg.rewards.scales ):
-            torques = -0.0002
+            # torques = -0.0002
             dof_pos_limits = -0.01
             world_vel_l2norm = -1.
             feet_on_box_contact = -1.0
             falloff_beam = 1
-            tracking_lin_vel = 0.0
+            tracking_lin_vel = 0.001
             alive = 2.0
-            stand_still = -0.1 
-            lin_vel_z = -0.5
+            stand_still = -0.0 
+            lin_vel_z = -0.
             tracking_ang_vel = 0.
             ang_vel_xy = 0.
             feet_air_time = 0.
             goal_distance = -0.1
+            dof_acc = 0.
             
             # default 
             # termination = -0.0

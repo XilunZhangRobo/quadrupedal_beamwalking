@@ -141,6 +141,7 @@ class OnPolicyRunner:
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
     def rollout_step(self, obs, critic_obs):
+        # print ("rollout_step", obs.shape, critic_obs.shape)
         actions = self.alg.act(obs, critic_obs)
         obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
         critic_obs = privileged_obs if privileged_obs is not None else obs

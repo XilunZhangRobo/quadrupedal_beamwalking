@@ -223,6 +223,25 @@ class LeggedRobot(BaseTask):
             heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements
             self.obs_buf = torch.cat((self.obs_buf, heights), dim=-1)
         # add noise if needed
+        # print (self.obs_buf.shape)
+        # print (self.noise_scale_vec.shape)
+            
+        if self.cfg.env.use_beam_info:
+            # Need to add the heading angle of the robot, the posiiton shift in y-direction, the width of the beam
+            
+            # Heading angle
+            forward = quat_apply(self.base_quat, self.forward_vec)
+            heading = torch.atan2(forward[:, 1], forward[:, 0])
+            self.obs_buf = torch.cat((self.obs_buf, heading.unsqueeze(1)), dim=-1)
+            # print (heading.unsqueeze(1).shape)
+            # Position shift in y-direction
+            self.obs_buf = torch.cat((self.obs_buf, self.root_states[:, 1].unsqueeze(1)), dim=-1)
+            # print (self.root_states[:, 1].unsqueeze(1).shape)
+            # Width of the beam
+            # copy self.num_envs times the beam size
+            beam_size = torch.ones(self.num_envs, device=self.device, dtype=torch.float) * self.beam_size[1]
+            self.obs_buf = torch.cat((self.obs_buf, beam_size.unsqueeze(1)), dim=-1)
+        
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
 
@@ -685,7 +704,7 @@ class LeggedRobot(BaseTask):
         start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
         
         ## create beam asset
-        self.beam_size = np.array([3.5, 0.3, 0.1])
+        self.beam_size = torch.tensor([3.5, 0.3, 0.1])
         beam_size = gymapi.Vec3(self.beam_size[0], self.beam_size[1], self.beam_size[2])
         beam_asset_options = gymapi.AssetOptions()
         beam_asset_options.fix_base_link = True
