@@ -35,12 +35,12 @@ class A1BeamwalkCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
         num_envs = 2024
         num_observations = 63 # 235
-        env_spacing = 5.  # not used with heightfields/trimeshes 
+        env_spacing = 7.  # not used with heightfields/trimeshes 
         use_beam_info = True
         use_prev_actions = True
         
     class init_state( LeggedRobotCfg.init_state ):
-        pos = [0.0, 0.0, 0.42+0.2] # x,y,z [m]
+        pos = [0.0, 0.0, 0.42] # x,y,z [m]
         
         default_joint_angles = { # = target angles [rad] when action = 0.0
             'FL_hip_joint': 0.1,   # [rad]

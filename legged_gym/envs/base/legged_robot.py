@@ -437,12 +437,27 @@ class LeggedRobot(BaseTask):
             ## define the initial position of the step base
             self.stepbase_state[env_ids, :3] = self.base_init_state[:3]
             self.stepbase_state[env_ids, :2] += self.env_origins[env_ids, :2]
-            self.stepbase_state[env_ids, 2] = self.beam_initial_pos[0][2]
+            self.stepbase_state[env_ids, 2] = self.beam_initial_pos[2]
+            
+            ## define the initial position of the end base
+            self.endbase_state[env_ids, :3] = self.endbase_initial_pos
+            self.endbase_state[env_ids, :2] += self.env_origins[env_ids, :2]
+            
+            # if 0 in env_ids:
+            #     print ("self.beam_state: ", self.beam_state[env_ids, :3])
+            #     print ("self.stepbase_state: ", self.stepbase_state[env_ids, :3])
+            #     print ("self.endbase_state: ", self.endbase_state[env_ids, :3])
+            #     print ("self.beam_size", self.beam_size)
+            #     print ("self.stepbase_size", self.stepbase_size)
+            #     print ("self.endbase_size", self.endbase_size)
+            
+            
+            
         # base velocities
         self.root_states[env_ids, 7:13] = torch_rand_float(-0.1, 0.1, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
         # env_ids_int32 = env_ids.to(dtype=torch.int32)
         multi_env_ids_int32 = self._global_indices[env_ids, :].flatten()
-        all_root_states = torch.cat((self.beam_state[:, None, :], self.stepbase_state[:,None,:], self.root_states[:, None, :]),dim=1).reshape(-1, 13)
+        all_root_states = torch.cat((self.beam_state[:, None, :], self.stepbase_state[:,None,:], self.endbase_state[:,None,:], self.root_states[:, None, :]),dim=1).reshape(-1, 13)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(all_root_states),
                                                      gymtorch.unwrap_tensor(multi_env_ids_int32.contiguous()), len(multi_env_ids_int32))
@@ -526,16 +541,19 @@ class LeggedRobot(BaseTask):
         self.gym.refresh_net_contact_force_tensor(self.sim)
         
         ## create initial pos 
-        self.beam_initial_pos = torch.tensor([[1.3, 0., 0.3]], device=self.device)
+        self.beam_initial_pos = torch.tensor([self.stepbase_size[0]/2+self.beam_size[0]/2, 0., 0.5], device=self.device)
+        self.endbase_initial_pos = torch.tensor([self.endbase_size[0]/2+self.beam_size[0]/2, 0., 0.],device=self.device)
+        self.endbase_initial_pos += self.beam_initial_pos
         
         ## create goal pos 
-        self.goal_pos = self.beam_initial_pos + self.beam_size[0] / 2 
+        self.goal_pos = self.endbase_initial_pos
 
         # create some wrapper tensors for different slices
         self.all_root_states = gymtorch.wrap_tensor(actor_root_state).view(self.num_envs, -1, 13)  # N, 2, 13
-        self.root_states = self.all_root_states[:, 2, :]  # N, 13
+        self.root_states = self.all_root_states[:, 3, :]  # N, 13
         self.beam_state = self.all_root_states[:, self.beam_id, :]
         self.stepbase_state = self.all_root_states[:, self.stepbase_id, :]
+        self.endbase_state = self.all_root_states[:, self.endbase_id, :]
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
@@ -710,7 +728,7 @@ class LeggedRobot(BaseTask):
         start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
         
         ## create beam asset
-        self.beam_size = torch.tensor([3.5, 0.3, 0.1])
+        self.beam_size = torch.tensor([3.5, 0.2, 0.1])
         beam_size = gymapi.Vec3(self.beam_size[0], self.beam_size[1], self.beam_size[2])
         beam_asset_options = gymapi.AssetOptions()
         beam_asset_options.fix_base_link = True
@@ -719,12 +737,22 @@ class LeggedRobot(BaseTask):
         rigid_beam_props_asset = self.gym.get_asset_rigid_shape_properties(beam_asset)
         
         ## create stepbase asset
-        stepbase_size = gymapi.Vec3(3, 3, 0.1)
+        self.stepbase_size = torch.tensor([1, 1, 0.1], device=self.device)
+        stepbase_size = gymapi.Vec3(self.stepbase_size[0], self.stepbase_size[1], self.stepbase_size[2])
         stepbase_asset_options = gymapi.AssetOptions()
         stepbase_asset_options.fix_base_link = True
         stepbase_asset = self.gym.create_box(self.sim, stepbase_size.x, stepbase_size.y, stepbase_size.z, stepbase_asset_options)
         stepbase_pose = gymapi.Transform()
         rigid_stepbase_props_asset = self.gym.get_asset_rigid_shape_properties(stepbase_asset)
+        
+        ## create endbase asset
+        self.endbase_size = self.stepbase_size
+        endbase_size = gymapi.Vec3(self.endbase_size[0], self.endbase_size[1], self.endbase_size[2])
+        endbase_asset_options = gymapi.AssetOptions()
+        endbase_asset_options.fix_base_link = True
+        endbase_asset = self.gym.create_box(self.sim, endbase_size.x, endbase_size.y, endbase_size.z, endbase_asset_options)
+        endbase_pose = gymapi.Transform()
+        rigid_endbase_props_asset = self.gym.get_asset_rigid_shape_properties(endbase_asset)
         
         self.default_friction = rigid_shape_props_asset[1].friction
         self.default_restitution = rigid_shape_props_asset[1].restitution
@@ -750,26 +778,43 @@ class LeggedRobot(BaseTask):
             self.gym.set_asset_rigid_shape_properties(beam_asset, rigid_beam_props)
             
             rigid_stepbase_props = self._process_rigid_shape_props(rigid_stepbase_props_asset, i)
-            self.gym.set_asset_rigid_shape_properties(stepbase_asset, rigid_stepbase_props)           
+            self.gym.set_asset_rigid_shape_properties(stepbase_asset, rigid_stepbase_props)    
+            
+            rigid_endbase_props = self._process_rigid_shape_props(rigid_endbase_props_asset, i)
+            self.gym.set_asset_rigid_shape_properties(endbase_asset, rigid_endbase_props)          
+                   
             
             # create beam instance
             beam_handle = self.gym.create_actor(env_handle, beam_asset, beam_pose, "box1", i, 0, 0)
             self.beam_id = beam_handle
+            # create stepbase instance
             stepbase_handle = self.gym.create_actor(env_handle, stepbase_asset, stepbase_pose, "box2", i, 0, 0)
             self.stepbase_id = stepbase_handle
+            # create endbase instance
+            endbase_handle = self.gym.create_actor(env_handle, endbase_asset, endbase_pose, "box3", i, 0, 0)
+            self.endbase_id = endbase_handle
+            
             color = gymapi.Vec3(np.random.uniform(0, 1), np.random.uniform(0, 1), np.random.uniform(0, 1))
             beam_props = self._process_rigid_body_props(self.gym.get_actor_rigid_body_properties(env_handle, beam_handle),i)
             stepbase_props = self._process_rigid_body_props(self.gym.get_actor_rigid_body_properties(env_handle, stepbase_handle),i)
+            endbase_props = self._process_rigid_body_props(self.gym.get_actor_rigid_body_properties(env_handle, endbase_handle),i)
             
+            # set beam properties
             self.gym.set_rigid_body_color(env_handle, beam_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
             self.gym.set_actor_rigid_body_properties(env_handle, beam_handle, beam_props, recomputeInertia=True)
             beam_idx = self.gym.get_actor_rigid_body_index(env_handle, beam_handle, 0, gymapi.DOMAIN_SIM)
             beam_idxs.append(beam_idx)
             
+            # set stepbase properties
             self.gym.set_rigid_body_color(env_handle, stepbase_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
             self.gym.set_actor_rigid_body_properties(env_handle, stepbase_handle, stepbase_props, recomputeInertia=True)
             stepbase_idx = self.gym.get_actor_rigid_body_index(env_handle, stepbase_handle, 0, gymapi.DOMAIN_SIM)
             stepbase_idxs.append(stepbase_idx)
+            
+            # set endbase properties
+            self.gym.set_rigid_body_color(env_handle, endbase_handle, 0, gymapi.MESH_VISUAL_AND_COLLISION, color)
+            self.gym.set_actor_rigid_body_properties(env_handle, endbase_handle, endbase_props, recomputeInertia=True)
+            endbase_idx = self.gym.get_actor_rigid_body_index(env_handle, endbase_handle, 0, gymapi.DOMAIN_SIM)
                 
             rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)
             self.gym.set_asset_rigid_shape_properties(robot_asset, rigid_shape_props)
@@ -794,7 +839,8 @@ class LeggedRobot(BaseTask):
         for i in range(len(termination_contact_names)):
             self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], termination_contact_names[i])
             
-        self._global_indices = torch.arange(self.num_envs * (1 + 2), dtype=torch.int32, 
+        # robot + 3 objects
+        self._global_indices = torch.arange(self.num_envs * (1 + 3), dtype=torch.int32, 
                                     device=self.device).view(self.num_envs, -1)   
         
     def _get_env_origins(self):
