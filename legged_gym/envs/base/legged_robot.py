@@ -541,7 +541,7 @@ class LeggedRobot(BaseTask):
         self.gym.refresh_net_contact_force_tensor(self.sim)
         
         ## create initial pos 
-        self.beam_initial_pos = torch.tensor([self.stepbase_size[0]/2+self.beam_size[0]/2, 0., 0.5], device=self.device)
+        self.beam_initial_pos = torch.tensor([self.stepbase_size[0]/2+self.beam_size[0]/2, 0., 0.3], device=self.device)
         self.endbase_initial_pos = torch.tensor([self.endbase_size[0]/2+self.beam_size[0]/2, 0., 0.],device=self.device)
         self.endbase_initial_pos += self.beam_initial_pos
         
